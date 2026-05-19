@@ -1,0 +1,87 @@
+name: Functional Tests
+
+# This push setting enables the pipeline to only run on pull requests before merging to the developV2 branch 
+on:
+  pull_request:
+    branches:
+      - developV2
+  workflow_dispatch: 
+  
+# The permission contents: read enables the jobs in this Action to read the contents of the repository
+permissions:
+  contents: read
+
+jobs:
+
+# The angular unit tests performs unit tests as defined with Karma and executed with ng test 
+  # angular-unit-tests:
+  #   runs-on: ubuntu-latest
+
+  #   permissions:
+  #     actions: write
+  #     contents: read
+ 
+  #   steps:
+  #     - uses: actions/checkout@v4
+
+  #     - name: Node Setup
+  #       uses: actions/setup-node@v4
+  #       with:
+  #         node-version: 20
+  #         cache: 'npm'
+
+  #     - name: Dependencies
+  #       run: npm ci
+
+  #     - name: Build Angular app
+  #       run: npx ng build
+
+  #     - name: Run Unit Tests
+  #       run: npx ng test --watch=false --browsers=ChromeHeadless
+  sbom:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Syft
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+
+      - name: Generate SBOM (CycloneDX JSON)
+        run: |
+          syft . -o cyclonedx-json > sbom.json
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-cyclonedx
+          path: sbom.json
+          
+# The e2e tests are currently not working, as there are issues in the current test definitions, thus this test was never tested and is probably non functional
+  # angular-e2e-tests:
+  #   runs-on: ubuntu-latest
+
+  #   steps:
+  #     - uses: actions/checkout@v4
+
+  #     - name: Node Setup
+  #       uses: actions/setup-node@v4
+  #       with:
+  #         node-version: 20
+  #         cache: 'npm'
+
+  #     - name: Dependencies
+  #       run: npm ci
+
+  #     - name: Build Angular app
+  #       run: npx ng build
+
+  #     - name: Serve Angular app
+  #       run: |
+  #         npm install -g http-server wait-on
+  #         http-server ./dist -p 4200 &
+  #         npx wait-on http://localhost:4200
+
+  #     - name: Run E2E Tests
+  #       run: npx ng e2e --watch=false
