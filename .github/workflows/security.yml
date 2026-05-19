@@ -1,0 +1,166 @@
+name: Security Tests
+#This test can be performed manually and will run on pull requests to the productive environment and each Sunday at 20:00
+on:
+  schedule:
+    - cron: '0 20 * * 0'
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - developV2
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+
+jobs:
+
+  sast:
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Semgrep
+        run: |
+          semgrep scan \
+            --config=p/security-audit \
+            --config=p/owasp-top-ten \
+            --config=p/cwe-top-25 \
+            --json \
+            --output=semgrep-results.json \
+            --verbose || true
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: semgrep-results
+          path: semgrep-results.json
+
+      - name: Create Issues for Findings
+        run: |
+          set -e
+
+          echo "Fetching existing issues..."
+
+          RESPONSE=$(curl -s \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/issues?state=open&per_page=100")
+
+          echo "Processing findings..."
+
+          while read -r finding; do
+
+            RULE=$(echo "$finding" | jq -r '.check_id')
+            FILE=$(echo "$finding" | jq -r '.path')
+            LINE=$(echo "$finding" | jq -r '.start.line')
+            MSG=$(echo "$finding" | jq -r '.extra.message')
+            SEVERITY=$(echo "$finding" | jq -r '.extra.severity')
+
+            case "$SEVERITY" in
+              ERROR) LEVEL="HIGH" ;;
+              WARNING) LEVEL="MEDIUM" ;;
+              INFO) LEVEL="LOW" ;;
+              *) LEVEL="LOW" ;;
+            esac
+
+            FINGERPRINT=$(echo "$RULE|$FILE|$MSG" | sha1sum | cut -d ' ' -f1)
+
+            TITLE="[Semgrep][$LEVEL] $RULE [$FINGERPRINT]"
+
+            EXISTS=$(echo "$RESPONSE" | jq -r --arg TITLE "$TITLE" '
+              if type == "array" then
+                map(select(.title == $TITLE)) | length
+              else
+                0
+              end
+            ')
+
+            if [ "$EXISTS" -eq 0 ]; then
+              echo "Creating issue: $TITLE"
+
+              BODY="$RULE - $FILE:$LINE - $MSG"
+
+
+              curl -s -X POST \
+                -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+                -H "Accept: application/vnd.github+json" \
+                "https://api.github.com/repos/${{ github.repository }}/issues" \
+                -d "$(jq -n \
+                  --arg title "$TITLE" \
+                  --arg body "$BODY" \
+                  --arg severity "$LEVEL" \
+                  '{
+                    title: $title,
+                    body: $body,
+                    labels: ["security", "semgrep", ("severity:" + $severity | ascii_downcase)]
+                  }'
+                )"
+
+            else
+              echo "Issue already exists: $TITLE"
+            fi
+
+          done < <(jq -c '.results[]' semgrep-results.json)
+          
+
+  angular-dast:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      issues: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Node Setup
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Angular app
+        run: npx ng build
+
+      - name: Serve Angular app
+        run: |
+          npm install -g http-server wait-on
+          http-server ./dist -p 4200 &
+          npx wait-on http://localhost:4200
+          
+      - name: ZAP Scan mit Ajax Spider
+        uses: zaproxy/action-full-scan@v0.10.0
+        continue-on-error: true
+        with:
+          target: 'http://localhost:4200'
+          allow_issue_writing: true
+          cmd_options: '-j'
+
+      - name: Upload ZAP Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: zap-report
+          path: |
+            report_html.html
+            report_json.json
+            report_md.md
+
+# This job searches for any secrets which are currently in the repository
+  secret-scanning:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
