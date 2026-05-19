@@ -117,29 +117,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Node Setup
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: 'npm'
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build Angular app
-        run: npx ng build
-
-      - name: Serve Angular app
+      - name: Start OWASP Juice Shop Container
         run: |
-          npm install -g http-server wait-on
-          http-server ./dist -p 4200 &
-          npx wait-on http://localhost:4200
-          
-      - name: ZAP Scan mit Ajax Spider
+          docker run -d \
+            --name juice-shop \
+            -p 3000:3000 \
+            bkimminich/juice-shop
+
+          npx wait-on http://localhost:3000
+
+      - name: ZAP Full Scan with Ajax Spider
         uses: zaproxy/action-full-scan@v0.10.0
         continue-on-error: true
         with:
-          target: 'http://localhost:4200'
+          target: 'http://localhost:3000'
           allow_issue_writing: true
           cmd_options: '-j'
 
@@ -151,7 +142,6 @@ jobs:
             report_html.html
             report_json.json
             report_md.md
-
 # This job searches for any secrets which are currently in the repository
   secret-scanning:
     runs-on: ubuntu-latest
